@@ -1,0 +1,25 @@
+# === INTELLIJ IDEA / JAVA ===
+*.iml
+.idea/
+out/
+*.log
+
+# === GRADLE ===
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# === SISTEMA ===
+.DS_Store
+Thumbs.db
+
+# === SPRING BOOT CONFIG PRIVADA ===
+*.env
+.env*
+application-*.properties
+!application.properties  # solo se incluye el base (sin datos sensibles)
+
+# === OTROS ===
+*.bak
+*.tmp
+.env

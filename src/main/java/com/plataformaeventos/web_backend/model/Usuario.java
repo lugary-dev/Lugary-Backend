@@ -51,6 +51,12 @@ public class Usuario {
     private String email;
 
     /**
+     * Número de teléfono (Formato E.164 recomendado: +549...)
+     */
+    @Column(length = 20)
+    private String telefono;
+
+    /**
      * Hash de la contraseña del usuario.
      *
      * Importante:
@@ -73,6 +79,21 @@ public class Usuario {
      */
     @Column(nullable = false)
     private boolean activo;
+
+    /**
+     * Indica si es la primera vez que el usuario inicia sesión (o si no ha visto el modal de bienvenida).
+     * true = debe ver el modal.
+     * false = ya vio el modal.
+     */
+    @Column(name = "is_first_login", nullable = false)
+    @Builder.Default
+    private boolean firstLogin = true;
+
+    /**
+     * URL de la imagen de perfil alojada en Cloudinary.
+     */
+    @Column(name = "imagen_url", length = 500)
+    private String imagenUrl;
 
     /**
      * Fecha y hora de creación del registro de usuario.

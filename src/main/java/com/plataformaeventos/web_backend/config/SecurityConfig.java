@@ -41,7 +41,8 @@ public class SecurityConfig {
                 .requestMatchers(
                         "/api/hello",
                         "/api/usuarios",
-                        "/api/auth/login"
+                        "/api/auth/login",
+                        "/api/auth/refresh-token" // [NUEVO] Permitir refrescar token sin estar autenticado (con access token)
                 ).permitAll()
 
                 // [NUEVO] Permitir que CUALQUIERA vea los espacios y su detalle

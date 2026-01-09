@@ -9,6 +9,7 @@ import com.plataformaeventos.web_backend.exception.DatosInvalidosException;
 import com.plataformaeventos.web_backend.exception.RecursoNoEncontradoException;
 import com.plataformaeventos.web_backend.model.*;
 import com.plataformaeventos.web_backend.repository.EspacioRepository;
+import com.plataformaeventos.web_backend.repository.PagoRepository;
 import com.plataformaeventos.web_backend.repository.ReservaRepository;
 import com.plataformaeventos.web_backend.repository.UsuarioRepository;
 import lombok.RequiredArgsConstructor;
@@ -18,8 +19,10 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -30,7 +33,9 @@ public class ReservaService {
     private final ReservaRepository reservaRepository;
     private final EspacioRepository espacioRepository;
     private final UsuarioRepository usuarioRepository;
+    private final PagoRepository pagoRepository; // Inyectamos el repositorio de pagos
 
+    @Transactional
     public ReservaResponse crearReserva(ReservaCrearRequest request) {
 
         Espacio espacio = espacioRepository.findById(request.getEspacioId())
@@ -40,8 +45,23 @@ public class ReservaService {
             throw new ConflictoReservaException("El espacio seleccionado no se encuentra activo.");
         }
 
-        Usuario usuario = usuarioRepository.findById(request.getUsuarioId())
-                .orElseThrow(() -> new RecursoNoEncontradoException("El usuario especificado no existe."));
+        Usuario usuario = null;
+        
+        // Lógica para determinar Usuario vs Invitado
+        if (request.getUsuarioId() != null) {
+            // Caso 1: Usuario Registrado
+            usuario = usuarioRepository.findById(request.getUsuarioId())
+                    .orElseThrow(() -> new RecursoNoEncontradoException("El usuario especificado no existe."));
+        } else {
+            // Caso 2: Invitado (Sin cuenta)
+            // Validar que el espacio permita invitados (opcional, si tienes esa config)
+            // if (!espacio.isPermiteInvitados()) throw ...
+
+            // Validar datos de contacto obligatorios
+            if (request.getEmailInvitado() == null || request.getNombreInvitado() == null) {
+                throw new DatosInvalidosException("Para reservar como invitado, debe proporcionar nombre y email.");
+            }
+        }
 
         LocalDateTime inicio = request.getFechaInicio();
         LocalDateTime fin = request.getFechaFin();
@@ -62,25 +82,50 @@ public class ReservaService {
 
         Reserva reserva = Reserva.builder()
                 .espacio(espacio)
-                .usuario(usuario)
+                .usuario(usuario) // Puede ser null
                 .fechaInicio(inicio)
                 .fechaFin(fin)
                 .precioTotal(precioTotal)
                 .estado(EstadoReserva.CONFIRMADA)
                 .fechaCreacion(LocalDateTime.now())
+                // Datos de invitado
+                .nombreInvitado(request.getNombreInvitado())
+                .emailInvitado(request.getEmailInvitado())
+                .telefonoInvitado(request.getTelefonoInvitado())
                 .build();
 
         Reserva guardada = reservaRepository.save(reserva);
+
+        // =================================================================
+        // 2. NUEVA LÓGICA: SIMULAR EL PAGO AUTOMÁTICO (El "Hook")
+        // =================================================================
+        // Solo generamos pago si hay un usuario registrado (para historial)
+        // Opcional: También podrías guardar pagos de invitados si quisieras
+        if (usuario != null) {
+            Pago nuevoPago = Pago.builder()
+                    .monto(guardada.getPrecioTotal())
+                    .concepto("Reserva - " + guardada.getEspacio().getNombre())
+                    .fecha(LocalDateTime.now())
+                    .metodoPago("Simulación (Saldo en cuenta)")
+                    .estado(EstadoPago.APROBADO)
+                    .tipo(TipoPago.PAGO)
+                    .usuario(usuario)
+                    .reserva(guardada)
+                    .build();
+
+            pagoRepository.save(nuevoPago);
+        }
+        // =================================================================
 
         return mapearAResponse(guardada);
     }
 
     private void validarReglasDeNegocio(Espacio espacio, LocalDateTime inicio, LocalDateTime fin) {
         // 1. Validar aviso mínimo
-        if (espacio.getAvisoMinimoHoras() != null) {
+        if (espacio.getAvisoMinimo() != null) {
             long horasDeAnticipacion = ChronoUnit.HOURS.between(LocalDateTime.now(), inicio);
-            if (horasDeAnticipacion < espacio.getAvisoMinimoHoras()) {
-                throw new DatosInvalidosException("La reserva debe hacerse con al menos " + espacio.getAvisoMinimoHoras() + " horas de anticipación.");
+            if (horasDeAnticipacion < espacio.getAvisoMinimo()) {
+                throw new DatosInvalidosException("La reserva debe hacerse con al menos " + espacio.getAvisoMinimo() + " horas de anticipación.");
             }
         }
 
@@ -102,10 +147,10 @@ public class ReservaService {
         }
         
         // 3. Validar anticipación máxima (meses)
-        if (espacio.getAnticipacionMaximaMeses() != null) {
-            LocalDateTime fechaMaxima = LocalDateTime.now().plusMonths(espacio.getAnticipacionMaximaMeses());
+        if (espacio.getAnticipacionMaxima() != null) {
+            LocalDateTime fechaMaxima = LocalDateTime.now().plusMonths(espacio.getAnticipacionMaxima());
             if (fin.isAfter(fechaMaxima)) {
-                throw new DatosInvalidosException("No se pueden hacer reservas con más de " + espacio.getAnticipacionMaximaMeses() + " meses de anticipación.");
+                throw new DatosInvalidosException("No se pueden hacer reservas con más de " + espacio.getAnticipacionMaxima() + " meses de anticipación.");
             }
         }
     }
@@ -176,7 +221,7 @@ public class ReservaService {
         return ReservaResponse.builder()
                 .id(reserva.getId())
                 .espacioId(reserva.getEspacio().getId())
-                .usuarioId(reserva.getUsuario().getId())
+                .usuarioId(reserva.getUsuario() != null ? reserva.getUsuario().getId() : null) // Manejo de null
                 .fechaInicio(reserva.getFechaInicio())
                 .fechaFin(reserva.getFechaFin())
                 .precioTotal(reserva.getPrecioTotal())
@@ -195,7 +240,11 @@ public class ReservaService {
                         .espacioId(reserva.getEspacio().getId())
                         .nombreEspacio(reserva.getEspacio().getNombre())
                         .direccionEspacio(reserva.getEspacio().getDireccion())
-                        .imagenUrlEspacio(reserva.getEspacio().getImagenUrl())
+                        .imagenUrlEspacio(
+                            (reserva.getEspacio().getImagenes() != null && !reserva.getEspacio().getImagenes().isEmpty())
+                            ? reserva.getEspacio().getImagenes().get(0).getUrl()
+                            : null
+                        )
                         .fechaInicio(reserva.getFechaInicio())
                         .fechaFin(reserva.getFechaFin())
                         .estado(reserva.getEstado())
@@ -221,9 +270,9 @@ public class ReservaService {
         return reservas.stream()
                 .map(reserva -> ReservaEspacioResponse.builder()
                         .id(reserva.getId())
-                        .usuarioId(reserva.getUsuario().getId())
-                        .nombreUsuario(reserva.getUsuario().getNombre())
-                        .emailUsuario(reserva.getUsuario().getEmail())
+                        .usuarioId(reserva.getUsuario() != null ? reserva.getUsuario().getId() : null)
+                        .nombreUsuario(reserva.getUsuario() != null ? reserva.getUsuario().getNombre() : reserva.getNombreInvitado())
+                        .emailUsuario(reserva.getUsuario() != null ? reserva.getUsuario().getEmail() : reserva.getEmailInvitado())
                         .fechaInicio(reserva.getFechaInicio())
                         .fechaFin(reserva.getFechaFin())
                         .estado(reserva.getEstado())
@@ -231,14 +280,57 @@ public class ReservaService {
                 .collect(Collectors.toList());
     }
 
+    /**
+     * Obtiene una lista de todas las fechas (días) que están ocupados
+     * por reservas CONFIRMADAS o PENDIENTES para un espacio dado.
+     */
+    public List<LocalDate> obtenerFechasOcupadas(Long espacioId) {
+        Espacio espacio = espacioRepository.findById(espacioId)
+                .orElseThrow(() -> new RecursoNoEncontradoException("El espacio no existe."));
+
+        // Buscamos todas las reservas futuras que no estén canceladas
+        List<Reserva> reservas = reservaRepository.findByEspacioAndEstadoAndFechaInicioBeforeAndFechaFinAfter(
+                espacio, EstadoReserva.CONFIRMADA, LocalDateTime.now().plusYears(2), LocalDateTime.now()
+        );
+        // Nota: La consulta de arriba es un ejemplo simplificado. 
+        // Lo ideal es buscar todas las reservas >= hoy.
+        // Usaremos una estrategia más simple: traer todas las futuras y procesarlas.
+        
+        // Mejor aproximación con los métodos que ya tenemos o podríamos tener:
+        // Vamos a buscar todas las reservas del espacio y filtrar en memoria las que nos interesan
+        // para no complicar el repositorio ahora mismo.
+        List<Reserva> todasLasReservas = reservaRepository.findByEspacioIdOrderByFechaInicioAsc(espacioId);
+        
+        List<LocalDate> fechasOcupadas = new ArrayList<>();
+        LocalDate hoy = LocalDate.now();
+
+        for (Reserva reserva : todasLasReservas) {
+            // Solo nos interesan reservas Confirmadas o Pendientes
+            if (reserva.getEstado() == EstadoReserva.CANCELADA) continue;
+            
+            // Solo reservas futuras o actuales
+            if (reserva.getFechaFin().toLocalDate().isBefore(hoy)) continue;
+
+            LocalDate inicio = reserva.getFechaInicio().toLocalDate();
+            LocalDate fin = reserva.getFechaFin().toLocalDate();
+
+            // Agregamos todos los días del rango a la lista
+            // stream().datesUntil es muy útil aquí (Java 9+)
+            inicio.datesUntil(fin.plusDays(1)).forEach(fechasOcupadas::add);
+        }
+
+        return fechasOcupadas.stream().distinct().collect(Collectors.toList());
+    }
+
     @Transactional
     public void cancelarReserva(Long reservaId, Long usuarioId) {
         Reserva reserva = reservaRepository.findById(reservaId)
                 .orElseThrow(() -> new RecursoNoEncontradoException("La reserva no existe."));
 
-        if (!reserva.getUsuario().getId().equals(usuarioId)) {
+        if (reserva.getUsuario() != null && !reserva.getUsuario().getId().equals(usuarioId)) {
             throw new DatosInvalidosException("No tiene permisos para cancelar esta reserva.");
         }
+        // TODO: Agregar lógica para que invitados puedan cancelar (quizás con un token por email)
 
         if (reserva.getEstado() == EstadoReserva.CANCELADA) {
             throw new DatosInvalidosException("La reserva ya se encuentra cancelada.");

@@ -26,5 +26,8 @@ public class LoginResponse {
     private String rol;
 
     /** ID del usuario autenticado (NECESARIO PARA CREAR ESPACIOS) */
-    private Long userId;   // 👈 AGREGADO
+    private Long userId;
+
+    /** Indica si es el primer login del usuario (para mostrar modal de bienvenida) */
+    private boolean firstLogin;
 }

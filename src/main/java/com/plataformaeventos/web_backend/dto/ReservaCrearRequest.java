@@ -34,4 +34,9 @@ public class ReservaCrearRequest {
      * Fecha y hora de fin de la reserva.
      */
     private LocalDateTime fechaFin;
+
+    // --- NUEVOS CAMPOS PARA INVITADOS ---
+    private String nombreInvitado;
+    private String emailInvitado;
+    private String telefonoInvitado;
 }

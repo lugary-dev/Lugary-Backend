@@ -6,6 +6,7 @@ import com.plataformaeventos.web_backend.dto.EspacioActualizarRequest;
 import com.plataformaeventos.web_backend.dto.EspacioCrearRequest;
 import com.plataformaeventos.web_backend.dto.EspacioResponse;
 import com.plataformaeventos.web_backend.service.EspacioService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -14,6 +15,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -23,6 +25,7 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/espacios")
 @RequiredArgsConstructor
+@Validated
 public class EspacioController {
 
     private final EspacioService espacioService;
@@ -34,9 +37,14 @@ public class EspacioController {
             @RequestPart(value = "imagenes", required = false) List<MultipartFile> imagenes
     ) {
         try {
+            Long usuarioId = getAuthenticatedUserId();
             EspacioCrearRequest request = objectMapper.readValue(espacioJson, EspacioCrearRequest.class);
-            EspacioResponse nuevoEspacio = espacioService.crearEspacio(request, imagenes);
+            // Validar manualmente si es necesario o confiar en la validación del servicio si se pasa @Valid
+            // Aquí pasamos el ID del usuario autenticado al servicio
+            EspacioResponse nuevoEspacio = espacioService.crearEspacio(request, imagenes, usuarioId);
             return ResponseEntity.status(HttpStatus.CREATED).body(nuevoEspacio);
+        } catch (AccessDeniedException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         } catch (Exception e) {
             e.printStackTrace();
             return ResponseEntity.internalServerError().build();
@@ -51,7 +59,15 @@ public class EspacioController {
     ) {
         try {
             Long usuarioId = getAuthenticatedUserId();
+            
+            // Debugging: Imprimir JSON recibido
+            System.out.println("JSON RECIBIDO (UPDATE): " + espacioJson);
+
             EspacioActualizarRequest request = objectMapper.readValue(espacioJson, EspacioActualizarRequest.class);
+            
+            // Debugging: Imprimir objeto DTO
+            System.out.println("DTO CONVERTIDO (UPDATE): " + request);
+
             EspacioResponse espacioActualizado = espacioService.actualizarEspacio(id, usuarioId, request, imagenes);
             return ResponseEntity.ok(espacioActualizado);
         } catch (AccessDeniedException e) {
@@ -61,8 +77,6 @@ public class EspacioController {
             return ResponseEntity.internalServerError().build();
         }
     }
-
-    // ... (el resto de los métodos GET, PATCH, DELETE se mantienen igual)
 
     @PatchMapping("/{id}/pausar")
     public ResponseEntity<EspacioResponse> pausarEspacio(@PathVariable Long id) throws AccessDeniedException {

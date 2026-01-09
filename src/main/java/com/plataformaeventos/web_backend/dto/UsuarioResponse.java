@@ -37,6 +37,11 @@ public class UsuarioResponse {
     private String email;
 
     /**
+     * Número de teléfono del usuario.
+     */
+    private String telefono;
+
+    /**
      * Rol asignado al usuario.
      */
     private RolUsuario rol;
@@ -45,6 +50,16 @@ public class UsuarioResponse {
      * Indica si el usuario se encuentra activo.
      */
     private boolean activo;
+
+    /**
+     * Indica si es la primera vez que el usuario inicia sesión.
+     */
+    private boolean firstLogin;
+
+    /**
+     * URL de la imagen de perfil.
+     */
+    private String imagenUrl;
 
     /**
      * Fecha y hora en la que se creó el registro de usuario.

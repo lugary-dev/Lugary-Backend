@@ -3,14 +3,17 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: eventos-backend
+    container_name: lugary-backend
     ports:
       - "8080:8080"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/eventosdb
-      SPRING_DATASOURCE_USERNAME: eventos_user
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/lugarydb
+      SPRING_DATASOURCE_USERNAME: lugary_user
       SPRING_DATASOURCE_PASSWORD: clave_segura
       SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      # Agregamos las de Gemini para que funcione la IA
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_API_URL: https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent
       JWT_SECRET: valor_super_secreto
       SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
@@ -19,15 +22,15 @@ services:
 
   db:
     image: postgres:15-alpine
-    container_name: eventos-db
+    container_name: lugary-db
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_DB: eventosdb
-      POSTGRES_USER: eventos_user
+      POSTGRES_DB: lugarydb
+      POSTGRES_USER: lugary_user
       POSTGRES_PASSWORD: clave_segura
     volumes:
-      - dbdata:/var/lib/postgresql/data
+      - lugary_data:/var/lib/postgresql/data
 
 volumes:
-  dbdata:
+  lugary_data:

@@ -36,9 +36,10 @@ public class Reserva {
 
     /**
      * Usuario que realiza la reserva.
+     * Ahora es OPCIONAL para permitir reservas de invitados.
      */
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "usuario_id", nullable = false)
+    @JoinColumn(name = "usuario_id", nullable = true)
     private Usuario usuario;
 
     /**
@@ -72,4 +73,14 @@ public class Reserva {
      */
     @Column(name = "fecha_creacion", nullable = false)
     private LocalDateTime fechaCreacion;
+
+    // --- CAMPOS PARA INVITADOS (SIN CUENTA) ---
+    private String nombreInvitado;
+    private String emailInvitado;
+    private String telefonoInvitado;
+
+    @PrePersist
+    protected void onCreate() {
+        this.fechaCreacion = LocalDateTime.now();
+    }
 }

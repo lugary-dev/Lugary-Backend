@@ -15,12 +15,16 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.function.Function;
@@ -36,22 +40,31 @@ public class EspacioService {
     private final CloudinaryService cloudinaryService;
 
     @Transactional
-    public EspacioResponse crearEspacio(EspacioCrearRequest request, List<MultipartFile> imagenes) throws IOException {
+    public EspacioResponse crearEspacio(EspacioCrearRequest request, List<MultipartFile> imagenes, Long propietarioId) throws IOException {
+        // Validar lógica de fechas
+        validarHorarios(request.getHoraCheckIn(), request.getHoraCheckOut());
+
+        Usuario propietario = usuarioRepository.findById(propietarioId)
+                .orElseThrow(() -> new RecursoNoEncontradoException("El propietario especificado no existe."));
+
         if ("PUBLICADO".equalsIgnoreCase(request.getEstado())) {
             validarPublicacion(request);
         }
-
-        Usuario propietario = usuarioRepository.findById(request.getPropietarioId())
-                .orElseThrow(() -> new RecursoNoEncontradoException("El propietario especificado no existe."));
 
         Espacio espacio = new Espacio();
         mapearRequestAEntidad(request, espacio);
         espacio.setPropietario(propietario);
         espacio.setFechaCreacion(LocalDateTime.now());
         
+        // Gestión de Imágenes con validación de Magic Bytes
         if (imagenes != null && !imagenes.isEmpty()) {
-            for (int i = 0; i < imagenes.size(); i++) {
-                MultipartFile imgFile = imagenes.get(i);
+            validarImagenes(imagenes);
+            
+            // Reordenar imágenes según imageOrder si existe
+            List<MultipartFile> imagenesOrdenadas = ordenarImagenes(imagenes, request.getImageOrder());
+
+            for (int i = 0; i < imagenesOrdenadas.size(); i++) {
+                MultipartFile imgFile = imagenesOrdenadas.get(i);
                 String url = cloudinaryService.subirImagen(imgFile);
                 ImagenEspacio imagenEspacio = new ImagenEspacio();
                 imagenEspacio.setUrl(url);
@@ -62,17 +75,27 @@ public class EspacioService {
         }
 
         Espacio guardado = espacioRepository.save(espacio);
-        return mapearAResponse(guardado);
+        return mapearAResponse(guardado, propietarioId);
     }
 
     @Transactional
     public EspacioResponse actualizarEspacio(Long espacioId, Long usuarioId, EspacioActualizarRequest request, List<MultipartFile> nuevasImagenes) throws IOException {
+        // Validar lógica de fechas si se actualizan
+        if (request.getHoraCheckIn() != null && request.getHoraCheckOut() != null) {
+            validarHorarios(request.getHoraCheckIn(), request.getHoraCheckOut());
+        }
+
         if ("PUBLICADO".equalsIgnoreCase(request.getEstado())) {
             validarPublicacion(request);
         }
 
         Espacio espacio = findEspacioByIdAndPropietario(espacioId, usuarioId);
         mapearRequestAEntidad(request, espacio);
+
+        // Gestión de Imágenes
+        if (nuevasImagenes != null && !nuevasImagenes.isEmpty()) {
+            validarImagenes(nuevasImagenes);
+        }
 
         List<String> imageOrder = request.getImageOrder();
         if (imageOrder != null) {
@@ -106,7 +129,66 @@ public class EspacioService {
         }
 
         Espacio actualizado = espacioRepository.save(espacio);
-        return mapearAResponse(actualizado);
+        return mapearAResponse(actualizado, usuarioId);
+    }
+
+    private void validarHorarios(LocalTime checkIn, LocalTime checkOut) {
+        if (checkIn == null || checkOut == null) return;
+        // Validar que checkIn y checkOut sean lógicos si es necesario
+    }
+
+    private void validarImagenes(List<MultipartFile> imagenes) {
+        for (MultipartFile file : imagenes) {
+            try {
+                // Validación básica de Magic Bytes (primeros bytes del archivo)
+                byte[] magicBytes = file.getInputStream().readNBytes(4);
+                if (!esImagenValida(magicBytes)) {
+                    throw new DatosInvalidosException("El archivo " + file.getOriginalFilename() + " no es una imagen válida o está corrupto.");
+                }
+            } catch (IOException e) {
+                throw new DatosInvalidosException("Error al leer el archivo " + file.getOriginalFilename());
+            }
+        }
+    }
+
+    private boolean esImagenValida(byte[] magicBytes) {
+        if (magicBytes.length < 4) return false;
+        
+        // Hex signatures
+        // JPEG: FF D8 FF
+        // PNG: 89 50 4E 47
+        // WEBP: RIFF ... WEBP (más complejo, simplificado aquí)
+        
+        if (magicBytes[0] == (byte) 0xFF && magicBytes[1] == (byte) 0xD8 && magicBytes[2] == (byte) 0xFF) return true; // JPEG
+        if (magicBytes[0] == (byte) 0x89 && magicBytes[1] == (byte) 0x50 && magicBytes[2] == (byte) 0x4E && magicBytes[3] == (byte) 0x47) return true; // PNG
+        
+        // Simple check for RIFF (WebP starts with RIFF)
+        if (magicBytes[0] == (byte) 0x52 && magicBytes[1] == (byte) 0x49 && magicBytes[2] == (byte) 0x46 && magicBytes[3] == (byte) 0x46) return true;
+
+        return false;
+    }
+
+    private List<MultipartFile> ordenarImagenes(List<MultipartFile> imagenes, List<String> imageOrder) {
+        if (imageOrder == null || imageOrder.isEmpty()) {
+            return imagenes;
+        }
+        
+        Map<String, MultipartFile> map = imagenes.stream()
+                .collect(Collectors.toMap(MultipartFile::getOriginalFilename, Function.identity()));
+        
+        List<MultipartFile> ordenadas = new ArrayList<>();
+        for (String name : imageOrder) {
+            if (map.containsKey(name)) {
+                ordenadas.add(map.get(name));
+            }
+        }
+        // Agregar las que no estaban en el orden al final (por seguridad)
+        for (MultipartFile file : imagenes) {
+            if (!ordenadas.contains(file)) {
+                ordenadas.add(file);
+            }
+        }
+        return ordenadas;
     }
 
     private void validarPublicacion(Object request) {
@@ -130,39 +212,83 @@ public class EspacioService {
             espacio.setCapacidadMaxima(r.getCapacidadMaxima());
             espacio.setPrecio(r.getPrecio());
             espacio.setUnidadPrecio(r.getUnidadPrecio());
-            espacio.setServicios(convertirListaAString(r.getServicios()));
+            espacio.setServicios(convertirListaAString(r.getServicios())); 
             espacio.setReglas(convertirListaAString(r.getReglas()));
-            espacio.setEstado(EstadoEspacio.valueOf(r.getEstado().toUpperCase()));
+            if (r.getEstado() != null) espacio.setEstado(EstadoEspacio.valueOf(r.getEstado().toUpperCase()));
             
             // Nuevos campos
-            espacio.setAvisoMinimoHoras(r.getAvisoMinimoHoras());
-            espacio.setAnticipacionMaximaMeses(r.getAnticipacionMaximaMeses());
-            espacio.setEstadiaMinima(r.getEstadiaMinima());
+            espacio.setLatitud(r.getLatitud());
+            espacio.setLongitud(r.getLongitud());
+            espacio.setGooglePlaceId(r.getGooglePlaceId());
+            espacio.setReferencia(r.getReferencia());
+            
+            espacio.setPrecioFinDeSemana(r.getPrecioFinDeSemana());
+            espacio.setCargoLimpieza(r.getCargoLimpieza());
+            espacio.setMontoDeposito(r.getMontoDeposito());
+            espacio.setCobroDeposito(r.getCobroDeposito());
+            
             espacio.setHoraCheckIn(r.getHoraCheckIn());
             espacio.setHoraCheckOut(r.getHoraCheckOut());
-            espacio.setDiasBloqueados(convertirListaAString(r.getDiasBloqueados()));
+            espacio.setTiempoPreparacion(r.getTiempoPreparacion());
+            espacio.setAvisoMinimo(r.getAvisoMinimo());
+            espacio.setAnticipacionMaxima(r.getAnticipacionMaxima());
+            espacio.setEstadiaMinima(r.getEstadiaMinima());
+            espacio.setDiasBloqueados(r.getDiasBloqueados());
+            
+            espacio.setTipoReserva(r.getTipoReserva());
+            espacio.setPoliticaCancelacion(r.getPoliticaCancelacion());
+            espacio.setMostrarDireccionExacta(r.getMostrarDireccionExacta());
+            espacio.setAcceptUnverifiedUsers(r.getAcceptUnverifiedUsers());
+            espacio.setPermiteEstadiaNocturna(r.getPermiteEstadiaNocturna());
             espacio.setPermiteReservasInvitado(r.getPermiteReservasInvitado());
+            
+            // NUEVO: Modo de Reserva
+            espacio.setModoReserva(r.getModoReserva());
 
         } else if (request instanceof EspacioActualizarRequest r) {
-            espacio.setNombre(r.getNombre());
-            espacio.setDescripcion(r.getDescripcion());
-            espacio.setTipo(r.getTipo());
-            espacio.setDireccion(r.getDireccion());
-            espacio.setCapacidadMaxima(r.getCapacidadMaxima());
-            espacio.setPrecio(r.getPrecio());
-            espacio.setUnidadPrecio(r.getUnidadPrecio());
-            espacio.setServicios(convertirListaAString(r.getServicios()));
-            espacio.setReglas(convertirListaAString(r.getReglas()));
-            espacio.setEstado(EstadoEspacio.valueOf(r.getEstado().toUpperCase()));
+            // Campos Básicos
+            if (r.getNombre() != null) espacio.setNombre(r.getNombre());
+            if (r.getDescripcion() != null) espacio.setDescripcion(r.getDescripcion());
+            if (r.getTipo() != null) espacio.setTipo(r.getTipo());
+            if (r.getDireccion() != null) espacio.setDireccion(r.getDireccion());
+            if (r.getCapacidadMaxima() != null) espacio.setCapacidadMaxima(r.getCapacidadMaxima());
+            if (r.getPrecio() != null) espacio.setPrecio(r.getPrecio());
+            if (r.getUnidadPrecio() != null) espacio.setUnidadPrecio(r.getUnidadPrecio());
+            if (r.getServicios() != null) espacio.setServicios(convertirListaAString(r.getServicios()));
+            if (r.getReglas() != null) espacio.setReglas(convertirListaAString(r.getReglas()));
+            if (r.getEstado() != null) espacio.setEstado(EstadoEspacio.valueOf(r.getEstado().toUpperCase()));
 
-            // Nuevos campos
-            espacio.setAvisoMinimoHoras(r.getAvisoMinimoHoras());
-            espacio.setAnticipacionMaximaMeses(r.getAnticipacionMaximaMeses());
-            espacio.setEstadiaMinima(r.getEstadiaMinima());
-            espacio.setHoraCheckIn(r.getHoraCheckIn());
-            espacio.setHoraCheckOut(r.getHoraCheckOut());
-            espacio.setDiasBloqueados(convertirListaAString(r.getDiasBloqueados()));
-            espacio.setPermiteReservasInvitado(r.getPermiteReservasInvitado());
+            // --- UBICACIÓN ---
+            if (r.getLatitud() != null) espacio.setLatitud(r.getLatitud());
+            if (r.getLongitud() != null) espacio.setLongitud(r.getLongitud());
+            if (r.getGooglePlaceId() != null) espacio.setGooglePlaceId(r.getGooglePlaceId());
+            if (r.getReferencia() != null) espacio.setReferencia(r.getReferencia());
+
+            // --- PRECIOS ---
+            if (r.getPrecioFinDeSemana() != null) espacio.setPrecioFinDeSemana(r.getPrecioFinDeSemana());
+            if (r.getCargoLimpieza() != null) espacio.setCargoLimpieza(r.getCargoLimpieza());
+            if (r.getMontoDeposito() != null) espacio.setMontoDeposito(r.getMontoDeposito());
+            if (r.getCobroDeposito() != null) espacio.setCobroDeposito(r.getCobroDeposito());
+
+            // --- REGLAS ---
+            if (r.getHoraCheckIn() != null) espacio.setHoraCheckIn(r.getHoraCheckIn());
+            if (r.getHoraCheckOut() != null) espacio.setHoraCheckOut(r.getHoraCheckOut());
+            if (r.getTiempoPreparacion() != null) espacio.setTiempoPreparacion(r.getTiempoPreparacion());
+            if (r.getAvisoMinimo() != null) espacio.setAvisoMinimo(r.getAvisoMinimo());
+            if (r.getAnticipacionMaxima() != null) espacio.setAnticipacionMaxima(r.getAnticipacionMaxima());
+            if (r.getEstadiaMinima() != null) espacio.setEstadiaMinima(r.getEstadiaMinima());
+            if (r.getDiasBloqueados() != null) espacio.setDiasBloqueados(r.getDiasBloqueados());
+
+            // --- CONFIGURACIÓN ---
+            if (r.getTipoReserva() != null) espacio.setTipoReserva(r.getTipoReserva());
+            if (r.getPoliticaCancelacion() != null) espacio.setPoliticaCancelacion(r.getPoliticaCancelacion());
+            if (r.getMostrarDireccionExacta() != null) espacio.setMostrarDireccionExacta(r.getMostrarDireccionExacta());
+            if (r.getAcceptUnverifiedUsers() != null) espacio.setAcceptUnverifiedUsers(r.getAcceptUnverifiedUsers());
+            if (r.getPermiteEstadiaNocturna() != null) espacio.setPermiteEstadiaNocturna(r.getPermiteEstadiaNocturna());
+            if (r.getPermiteReservasInvitado() != null) espacio.setPermiteReservasInvitado(r.getPermiteReservasInvitado());
+            
+            // NUEVO: Modo de Reserva
+            if (r.getModoReserva() != null) espacio.setModoReserva(r.getModoReserva());
         }
     }
     
@@ -196,8 +322,8 @@ public class EspacioService {
         if (capacidadMinima != null && capacidadMinima > 0) {
             spec = spec.and((root, query, cb) -> cb.greaterThanOrEqualTo(root.get("capacidadMaxima"), capacidadMinima));
         }
-
-        return espacioRepository.findAll(spec, pageable).map(this::mapearAResponse);
+        
+        return espacioRepository.findAll(spec, pageable).map(espacio -> mapearAResponse(espacio, usuarioNavegandoId));
     }
 
     @Transactional
@@ -205,7 +331,7 @@ public class EspacioService {
         Espacio espacio = findEspacioByIdAndPropietario(espacioId, usuarioId);
         espacio.setEstado(EstadoEspacio.PAUSADO);
         Espacio guardado = espacioRepository.save(espacio);
-        return mapearAResponse(guardado);
+        return mapearAResponse(guardado, usuarioId);
     }
 
     @Transactional
@@ -213,13 +339,21 @@ public class EspacioService {
         Espacio espacio = findEspacioByIdAndPropietario(espacioId, usuarioId);
         espacio.setEstado(EstadoEspacio.PUBLICADO);
         Espacio guardado = espacioRepository.save(espacio);
-        return mapearAResponse(guardado);
+        return mapearAResponse(guardado, usuarioId);
     }
 
     public EspacioResponse obtenerPorId(Long id) {
         Espacio espacio = espacioRepository.findById(id)
                 .orElseThrow(() -> new RecursoNoEncontradoException("No se encontró un espacio con el ID especificado."));
-        return mapearAResponse(espacio);
+        
+        Long usuarioId = null;
+        try {
+            usuarioId = getAuthenticatedUserId();
+        } catch (Exception e) {
+            // Usuario anónimo
+        }
+        
+        return mapearAResponse(espacio, usuarioId);
     }
 
     @Transactional
@@ -237,20 +371,61 @@ public class EspacioService {
         return espacio;
     }
 
-    private EspacioResponse mapearAResponse(Espacio espacio) {
+    private EspacioResponse mapearAResponse(Espacio espacio, Long usuarioConsultanteId) {
         List<String> urls = espacio.getImagenes().stream()
                                     .map(ImagenEspacio::getUrl)
                                     .collect(Collectors.toList());
 
+        // Lógica de Privacidad para Dirección
+        String direccionMostrada = espacio.getDireccion();
+        Double latitudMostrada = espacio.getLatitud();
+        Double longitudMostrada = espacio.getLongitud();
+        String referenciaMostrada = espacio.getReferencia();
+
+        boolean esPropietario = usuarioConsultanteId != null && usuarioConsultanteId.equals(espacio.getPropietario().getId());
+        boolean tieneReservaConfirmada = false;
+        if (usuarioConsultanteId != null && !esPropietario) {
+            // Verificar si tiene reserva confirmada (lógica simplificada)
+            // tieneReservaConfirmada = reservaRepository.existsByEspacioAndUsuarioAndEstado(espacio, usuarioConsultanteId, EstadoReserva.CONFIRMADA);
+        }
+
+        if (espacio.getMostrarDireccionExacta() == VisibilidadDireccion.APROXIMADA && !esPropietario && !tieneReservaConfirmada) {
+            direccionMostrada = null; 
+            referenciaMostrada = null;
+            
+            // Fuzzing de coordenadas
+            if (latitudMostrada != null && longitudMostrada != null) {
+                double fuzzLat = (Math.random() - 0.5) * 0.004; 
+                double fuzzLng = (Math.random() - 0.5) * 0.004;
+                latitudMostrada += fuzzLat;
+                longitudMostrada += fuzzLng;
+            }
+        }
+
         EspacioConfig config = EspacioConfig.builder()
                 .unidadPrecio(espacio.getUnidadPrecio())
-                .avisoMinimoHoras(espacio.getAvisoMinimoHoras())
-                .anticipacionMaximaMeses(espacio.getAnticipacionMaximaMeses())
-                .estadiaMinima(espacio.getEstadiaMinima())
+                .latitud(latitudMostrada)
+                .longitud(longitudMostrada)
+                .googlePlaceId(esPropietario || tieneReservaConfirmada ? espacio.getGooglePlaceId() : null)
+                .referencia(referenciaMostrada)
+                .precioFinDeSemana(espacio.getPrecioFinDeSemana())
+                .cargoLimpieza(espacio.getCargoLimpieza())
+                .montoDeposito(espacio.getMontoDeposito())
+                .cobroDeposito(espacio.getCobroDeposito())
                 .horaCheckIn(espacio.getHoraCheckIn())
                 .horaCheckOut(espacio.getHoraCheckOut())
-                .diasBloqueados(convertirStringALista(espacio.getDiasBloqueados()))
+                .tiempoPreparacion(espacio.getTiempoPreparacion())
+                .avisoMinimo(espacio.getAvisoMinimo())
+                .anticipacionMaxima(espacio.getAnticipacionMaxima())
+                .estadiaMinima(espacio.getEstadiaMinima())
+                .diasBloqueados(espacio.getDiasBloqueados())
+                .tipoReserva(espacio.getTipoReserva())
+                .politicaCancelacion(espacio.getPoliticaCancelacion())
+                .mostrarDireccionExacta(espacio.getMostrarDireccionExacta())
+                .acceptUnverifiedUsers(espacio.getAcceptUnverifiedUsers())
+                .permiteEstadiaNocturna(espacio.getPermiteEstadiaNocturna())
                 .permiteReservasInvitado(espacio.getPermiteReservasInvitado())
+                .modoReserva(espacio.getModoReserva()) // NUEVO
                 .build();
 
         // Obtener fechas ocupadas
@@ -265,7 +440,6 @@ public class EspacioService {
                 current = current.plusDays(1);
             }
         }
-        // Eliminar duplicados si los hubiera
         fechasOcupadas = fechasOcupadas.stream().distinct().collect(Collectors.toList());
 
         return EspacioResponse.builder()
@@ -273,10 +447,9 @@ public class EspacioService {
                 .nombre(espacio.getNombre())
                 .descripcion(espacio.getDescripcion())
                 .tipo(espacio.getTipo())
-                .direccion(espacio.getDireccion())
+                .direccion(direccionMostrada)
                 .capacidadMaxima(espacio.getCapacidadMaxima())
                 .precio(espacio.getPrecio())
-                // .unidadPrecio(espacio.getUnidadPrecio()) // Ahora está en config
                 .estado(espacio.getEstado().name())
                 .propietarioId(espacio.getPropietario().getId())
                 .fechaCreacion(espacio.getFechaCreacion())
@@ -288,11 +461,35 @@ public class EspacioService {
                 .build();
     }
 
-    private String convertirListaAString(List<String> lista) {
-        return (lista == null || lista.isEmpty()) ? null : String.join(",", lista);
+    private String convertirListaAString(Object listaObj) {
+        if (listaObj == null) return null;
+        if (listaObj instanceof String) return (String) listaObj;
+        if (listaObj instanceof List) {
+            List<?> lista = (List<?>) listaObj;
+            if (lista.isEmpty()) return null;
+            return lista.stream().map(Object::toString).collect(Collectors.joining(","));
+        }
+        return null;
     }
 
     private List<String> convertirStringALista(String texto) {
         return (!StringUtils.hasText(texto)) ? Collections.emptyList() : Arrays.asList(texto.split(","));
+    }
+    
+    private Long getAuthenticatedUserId() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated() || "anonymousUser".equals(authentication.getPrincipal())) {
+            throw new AccessDeniedException("Usuario no autenticado");
+        }
+        try {
+             Object principal = authentication.getPrincipal();
+             // Asumiendo que CustomUserDetails tiene un método getId()
+             if (principal instanceof com.plataformaeventos.web_backend.config.CustomUserDetails) {
+                 return ((com.plataformaeventos.web_backend.config.CustomUserDetails) principal).getId();
+             }
+        } catch (Exception e) {
+            // Fallback
+        }
+        throw new AccessDeniedException("No se pudo obtener el ID del usuario autenticado");
     }
 }

@@ -9,7 +9,6 @@ import org.springframework.stereotype.Component;
 
 import java.security.Key;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.Date;
 
 /**
@@ -22,14 +21,14 @@ import java.util.Date;
 public class JwtService {
 
     private final Key signingKey;
-    private final long expirationInMinutes;
+    private final long expirationInMs;
 
     public JwtService(
             @Value("${jwt.secret}") String secret,
-            @Value("${jwt.expiration-in-minutes}") long expirationInMinutes
+            @Value("${jwt.expiration}") long expirationInMs
     ) {
         this.signingKey = Keys.hmacShaKeyFor(secret.getBytes());
-        this.expirationInMinutes = expirationInMinutes;
+        this.expirationInMs = expirationInMs;
     }
 
     /**
@@ -40,7 +39,7 @@ public class JwtService {
      */
     public String generarToken(String email) {
         Instant ahora = Instant.now();
-        Instant expiracion = ahora.plus(expirationInMinutes, ChronoUnit.MINUTES);
+        Instant expiracion = ahora.plusMillis(expirationInMs);
 
         return Jwts.builder()
                 .setSubject(email)

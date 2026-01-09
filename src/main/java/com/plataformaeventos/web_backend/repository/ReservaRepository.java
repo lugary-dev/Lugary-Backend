@@ -5,6 +5,8 @@ import com.plataformaeventos.web_backend.model.Reserva;
 import com.plataformaeventos.web_backend.model.Usuario;
 import com.plataformaeventos.web_backend.model.Espacio;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -52,8 +54,12 @@ public interface ReservaRepository extends JpaRepository<Reserva, Long> {
     /**
      * Obtiene las reservas realizadas por un usuario,
      * ordenadas de más reciente a más antigua.
+     * 
+     * OPTIMIZACIÓN: Usamos JOIN FETCH para traer los datos del Espacio en la misma consulta
+     * y evitar el problema N+1.
      */
-    List<Reserva> findByUsuarioIdOrderByFechaInicioDesc(Long usuarioId);
+    @Query("SELECT r FROM Reserva r JOIN FETCH r.espacio WHERE r.usuario.id = :usuarioId ORDER BY r.fechaInicio DESC")
+    List<Reserva> findByUsuarioIdOrderByFechaInicioDesc(@Param("usuarioId") Long usuarioId);
 
     boolean existsByEspacioIdAndEstadoNot(Long espacioId, EstadoReserva estado);
 
